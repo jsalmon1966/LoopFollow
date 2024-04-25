@@ -41,6 +41,50 @@ class SettingsViewController: FormViewController {
         
     }
    
+    // Determine if the build is from TestFlight
+    func isTestFlightBuild() -> Bool {
+#if targetEnvironment(simulator)
+        return false
+#else
+        if Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision") != nil {
+            return false
+        }
+        guard let receiptName = Bundle.main.appStoreReceiptURL?.lastPathComponent else {
+            return false
+        }
+        return "sandboxReceipt".caseInsensitiveCompare(receiptName) == .orderedSame
+#endif
+    }
+    
+    // Get the build date from the build details
+    func buildDate() -> Date? {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "EEE MMM d HH:mm:ss 'UTC' yyyy"
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.timeZone = TimeZone(identifier: "UTC")
+        
+        guard let dateString = BuildDetails.default.buildDateString,
+              let date = dateFormatter.date(from: dateString) else {
+            return nil
+        }
+        return date
+    }
+    
+    // Calculate the expiration date based on the build type
+    func calculateExpirationDate() -> Date {
+        if isTestFlightBuild(), let buildDate = buildDate() {
+            // For TestFlight, add 90 days to the build date
+            return Calendar.current.date(byAdding: .day, value: 90, to: buildDate)!
+        } else {
+            // For Xcode builds, use the provisioning profile's expiration date
+            if let provision = MobileProvision.read() {
+                return provision.expirationDate
+            } else {
+                return Date() // Fallback to current date if unable to read provisioning profile
+            }
+        }
+    }
+    
    override func viewDidLoad() {
         super.viewDidLoad()
         if UserDefaultsRepository.forceDarkMode.value {
@@ -49,11 +93,12 @@ class SettingsViewController: FormViewController {
        UserDefaultsRepository.showNS.value = false
        UserDefaultsRepository.showDex.value = false
     
-        var expiration: Date = Date()
-        if let provision = MobileProvision.read() {
-            expiration = provision.expirationDate
-        }
-                        
+       let expiration = calculateExpirationDate()
+       var expirationHeaderString = "App Expiration"
+       if isTestFlightBuild() {
+          expirationHeaderString = "Beta (TestFlight) Expiration"
+       }
+       
         form
         +++ Section(header: "Data Settings", footer: "")
        <<< SegmentedRow<String>("units") { row in
@@ -228,16 +273,6 @@ class SettingsViewController: FormViewController {
            ), onDismiss: nil)
             
         }
-            <<< LabelRow("Clear Images"){ row in
-                row.title = "Delete Watch Face Images"
-            }.onCellSelection{ cell,row  in
-                if UserDefaultsRepository.saveImage.value {
-                    guard let mainScreen = self.tabBarController!.viewControllers?[0] as? MainViewController else { return }
-                    
-                    mainScreen.deleteOldImages()
-                    mainScreen.saveChartImage()
-                }
-            }
         
        +++ Section("Advanced Settings")
         <<< ButtonRow() {
@@ -253,13 +288,23 @@ class SettingsViewController: FormViewController {
         }
 
        +++ Section(header: getAppVersion(), footer: "")
-
-       +++ Section(header: "App Expiration", footer: String(expiration.description))
-
-        showHideNSDetails()
+       
+       if !isMacApp() {
+           form +++ Section(header: expirationHeaderString, footer: String(expiration.description))
+       }
+       
+       showHideNSDetails()
        checkNightscoutStatus()
     }
     
+    func isMacApp() -> Bool {
+#if targetEnvironment(macCatalyst)
+        return true
+#else
+        return false
+#endif
+    }
+
     func getAppVersion() -> String {
         if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
             return "App Version: \(version)"
